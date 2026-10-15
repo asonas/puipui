@@ -13,6 +13,15 @@ open build/Puipui.app
 
 Finderから `build/Puipui.app` を開くこともできます。チーム `QYP65434UW` のApple Development証明書で署名します。証明書と秘密鍵がキーチェーンに必要です。配布用の公証はしていません。
 
+ログイン時に起動する場合は、アプリを固定した配置先に置いてから、そのアプリ自身で登録します。開発用worktreeのアプリは登録しないでください。
+
+```sh
+ditto build/Puipui.app /Applications/Puipui.app
+/Applications/Puipui.app/Contents/MacOS/Puipui --register-login-item
+```
+
+登録にはmacOSのServiceManagement APIを使い、`loginItemEnabled=true` で有効化を確認します。解除はシステム設定の「ログイン項目と機能拡張」で行えます。
+
 フォルダアクセス許可を更新後も引き継ぐため、同じBundle IDと開発用署名を継続して使います。証明書が見つからない場合はビルドを失敗させ、アドホック署名には切り替えません。従来のアドホック署名から移行した直後は、アクセス許可を再度求められることがあります。
 
 ## 操作

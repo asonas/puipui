@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import GhosttyTerminal
 import QuartzCore
+import ServiceManagement
 
 final class MenuPanel: NSPanel {
     var dismissOverlay: () -> Bool = { false }
@@ -79,6 +80,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var terminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--register-login-item") {
+            do {
+                if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
+                let enabled = SMAppService.mainApp.status == .enabled
+                print("loginItemEnabled=\(enabled) app=\(Bundle.main.bundleURL.path)")
+                exit(enabled ? 0 : 1)
+            } catch {
+                print("Login item registration failed: \(error)")
+                exit(1)
+            }
+        }
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.title = "PUI"
         status.button?.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)

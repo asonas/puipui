@@ -3,7 +3,8 @@ import Foundation
 import SystemConfiguration
 
 struct SystemSample: Sendable {
-    let cpu: Double?
+    let timestamp: Date
+    let cpu: CPUUsage?
     let memory: Double?
     let interface: String?
     let receivedBytesPerSecond: Double?
@@ -12,11 +13,29 @@ struct SystemSample: Sendable {
     let diskTotal: UInt64?
 }
 
-private struct CPUTicks: Sendable {
+struct CPUTicks: Sendable {
     let user: UInt64
     let system: UInt64
     let idle: UInt64
     let nice: UInt64
+}
+
+struct CPUUsage: Sendable {
+    let user: Double
+    let system: Double
+    var total: Double { user + system }
+
+    init?(current: CPUTicks?, previous: CPUTicks?) {
+        guard let current, let previous,
+              current.user >= previous.user, current.system >= previous.system,
+              current.idle >= previous.idle, current.nice >= previous.nice else { return nil }
+        let user = current.user - previous.user + current.nice - previous.nice
+        let system = current.system - previous.system
+        let total = user + system + current.idle - previous.idle
+        guard total > 0 else { return nil }
+        self.user = Double(user) / Double(total)
+        self.system = Double(system) / Double(total)
+    }
 }
 
 private struct NetworkCounters: Sendable {
@@ -36,7 +55,7 @@ actor SystemSampler {
         let now = ContinuousClock.now
         let ticks = readCPUTicks()
         let counters = readNetworkCounters()
-        let cpu = cpuUsage(current: ticks, previous: previousCPU)
+        let cpu = CPUUsage(current: ticks, previous: previousCPU)
         let network = networkRates(current: counters, previous: previousNetwork,
                                    elapsed: previousTime.map { $0.duration(to: now) })
         if samplesSinceDiskRefresh >= 60 || diskCapacity == nil {
@@ -49,7 +68,7 @@ actor SystemSampler {
         previousNetwork = counters
         previousTime = now
 
-        return SystemSample(cpu: cpu, memory: readMemoryUsage(),
+        return SystemSample(timestamp: Date(), cpu: cpu, memory: readMemoryUsage(),
                             interface: counters?.interface,
                             receivedBytesPerSecond: network?.received,
                             sentBytesPerSecond: network?.sent,
@@ -68,16 +87,6 @@ actor SystemSampler {
         guard result == KERN_SUCCESS else { return nil }
         return CPUTicks(user: UInt64(info.cpu_ticks.0), system: UInt64(info.cpu_ticks.1),
                         idle: UInt64(info.cpu_ticks.2), nice: UInt64(info.cpu_ticks.3))
-    }
-
-    private func cpuUsage(current: CPUTicks?, previous: CPUTicks?) -> Double? {
-        guard let current, let previous,
-              current.user >= previous.user, current.system >= previous.system,
-              current.idle >= previous.idle, current.nice >= previous.nice else { return nil }
-        let active = current.user - previous.user + current.system - previous.system + current.nice - previous.nice
-        let total = active + current.idle - previous.idle
-        guard total > 0 else { return nil }
-        return Double(active) / Double(total)
     }
 
     private func readMemoryUsage() -> Double? {
@@ -146,22 +155,27 @@ actor SystemSampler {
 
 @MainActor
 final class DashboardModel: ObservableObject {
-    @Published private(set) var latest = SystemSample(cpu: nil, memory: nil, interface: nil,
+    @Published private(set) var latest = SystemSample(timestamp: Date(), cpu: nil, memory: nil, interface: nil,
                                                       receivedBytesPerSecond: nil, sentBytesPerSecond: nil,
                                                       diskFree: nil, diskTotal: nil)
-    @Published private(set) var cpuHistory: [Double] = []
-    @Published private(set) var memoryHistory: [Double] = []
-    @Published private(set) var networkHistory: [Double] = []
-    @Published private(set) var memoryPressure = "NORMAL"
+    @Published private(set) var history: [SystemSample] = []
+    @Published private(set) var memoryPressure = "normal"
     @Published private(set) var reclaimableBytes: UInt64?
     @Published private(set) var lastScan: Date?
-    @Published private(set) var scanState = "READY"
+    @Published private(set) var scanState: ScanState = .idle
+    @Published private(set) var nextScan: Date?
+    @Published private(set) var moleExecutable: URL?
+    @Published var showsScanDetails = false
 
     private let sampler = SystemSampler()
     private var samplingTask: Task<Void, Never>?
     private var pressureSource: DispatchSourceMemoryPressure?
-    private let moleScanner = MoleScanner()
+    private let moleScanner: MoleScanner
     private var scheduledScanTask: Task<Void, Never>?
+
+    init(moleScanner: MoleScanner = MoleScanner()) {
+        self.moleScanner = moleScanner
+    }
 
     func start() {
         guard samplingTask == nil else { return }
@@ -174,53 +188,79 @@ final class DashboardModel: ObservableObject {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
-        scheduledScanTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3600))
-                guard let self else { return }
-                await scan()
-            }
-        }
+        scheduledScanTask = Task { [weak self] in await self?.scan() }
     }
 
     func scan() async {
-        guard scanState != "SCANNING" else { return }
-        scanState = "SCANNING"
+        guard scanState != .scanning else { return }
+        scheduledScanTask?.cancel()
+        scheduledScanTask = nil
+        nextScan = nil
+        scanState = .scanning
         let result = await moleScanner.scan()
+        moleExecutable = await moleScanner.executable
+        let completed = Date()
         switch result {
         case .success(let bytes):
             reclaimableBytes = bytes
-            lastScan = Date()
-            scanState = "READY"
+            lastScan = completed
+            scanState = .ready
         case .failure(let error):
-            scanState = error.label
+            scanState = .failed(error)
         }
+        nextScan = completed.addingTimeInterval(3600)
+        scheduledScanTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(3600)) } catch { return }
+            guard let self else { return }
+            scheduledScanTask = nil
+            await scan()
+        }
+    }
+
+    func stop() {
+        samplingTask?.cancel()
+        samplingTask = nil
+        scheduledScanTask?.cancel()
+        scheduledScanTask = nil
+        pressureSource?.cancel()
+        pressureSource = nil
     }
 
     private func apply(_ sample: SystemSample) {
         latest = sample
-        append(sample.cpu, to: &cpuHistory)
-        append(sample.memory, to: &memoryHistory)
-        let traffic = [sample.receivedBytesPerSecond, sample.sentBytesPerSecond].compactMap { $0 }.reduce(0, +)
-        append(sample.receivedBytesPerSecond == nil && sample.sentBytesPerSecond == nil ? nil : traffic,
-               to: &networkHistory)
-    }
-
-    private func append(_ value: Double?, to history: inout [Double]) {
-        guard let value else { return }
-        history.append(value)
-        if history.count > 300 { history.removeFirst(history.count - 300) }
+        history.append(sample)
+        history.removeAll { $0.timestamp < sample.timestamp.addingTimeInterval(-300) }
     }
 
     private func startMemoryPressureMonitoring() {
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical], queue: .main)
         source.setEventHandler { [weak self, weak source] in
             guard let self, let event = source?.data else { return }
-            if event.contains(.critical) { memoryPressure = "CRITICAL" }
-            else if event.contains(.warning) { memoryPressure = "WARNING" }
-            else { memoryPressure = "NORMAL" }
+            if event.contains(.critical) { memoryPressure = "critical" }
+            else if event.contains(.warning) { memoryPressure = "warning" }
+            else { memoryPressure = "normal" }
         }
         source.resume()
         pressureSource = source
+    }
+}
+
+enum ScanState: Equatable {
+    case idle
+    case scanning
+    case ready
+    case failed(ScanFailure)
+
+    var failure: ScanFailure? {
+        if case .failed(let failure) = self { failure } else { nil }
+    }
+
+    var moleStatus: String {
+        switch self {
+        case .idle, .scanning: "Checking…"
+        case .failed(.unavailable): "Not found"
+        case .failed(.incompatible): "Unsupported"
+        default: "Ready"
+        }
     }
 }

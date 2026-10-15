@@ -123,7 +123,7 @@ final class SideTerminal: NSViewController, TerminalSurfaceCloseDelegate {
         ])
         pty.onData = { [weak self] data in
             guard let self else { return }
-            if CommandLine.arguments.contains("--check-terminal") || CommandLine.arguments.contains("--check-clean-input") {
+            if CommandLine.arguments.contains("--check-terminal") {
                 receivedText += String(decoding: data, as: UTF8.self)
             }
             session.receive(data)

@@ -2,6 +2,96 @@ import Foundation
 import Testing
 @testable import Puipui
 
+private struct MoleFixture {
+    let folder: URL
+    let executable: URL
+    let preview: URL
+
+    init() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        executable = folder.appendingPathComponent("mo")
+        preview = folder.appendingPathComponent("preview.txt")
+        try writeExecutable()
+    }
+
+    func writeExecutable(version: String = "1.53.2", exitCode: Int = 0, delay: Bool = false) throws {
+        let path = preview.path.replacingOccurrences(of: "'", with: "'\\''")
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "--version" ]; then
+            printf '%s\\n' 'Mole version \(version)'
+            exit 0
+        fi
+        [ "$1" = "clean" ] && [ "$2" = "--dry-run" ] || exit 9
+        \(delay ? "/bin/sleep 0.15" : ":")
+        [ \(exitCode) -eq 0 ] || exit \(exitCode)
+        printf '# Mole Cleanup Preview - fixture\\n/tmp/cache  # 2.4GB\\n' > '\(path)'
+        /bin/chmod 600 '\(path)'
+        """
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+    }
+
+    func remove() { try? FileManager.default.removeItem(at: folder) }
+}
+
+@Test func executableLookupFollowsPathOrderAndSkipsDirectories() throws {
+    let first = try MoleFixture()
+    let second = try MoleFixture()
+    defer { first.remove(); second.remove() }
+    #expect(MoleScanner.findExecutable(in: "\(first.folder.path):\(second.folder.path)") == first.executable)
+    try FileManager.default.removeItem(at: first.executable)
+    try FileManager.default.createDirectory(at: first.executable, withIntermediateDirectories: false)
+    #expect(MoleScanner.findExecutable(in: "\(first.folder.path):\(second.folder.path)") == second.executable)
+}
+
+@Test @MainActor func startupScansImmediatelyAndRescanningRetainsLastSuccessOnFailure() async throws {
+    let fixture = try MoleFixture()
+    defer { fixture.remove() }
+    let model = DashboardModel(moleScanner: MoleScanner(executable: fixture.executable, preview: fixture.preview))
+    defer { model.stop() }
+    model.start()
+    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+    while model.lastScan == nil && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.scanState == .ready)
+    #expect(model.reclaimableBytes == 2_400_000_000)
+    let lastSuccess = try #require(model.lastScan)
+    let firstSchedule = try #require(model.nextScan)
+    #expect(firstSchedule.timeIntervalSince(lastSuccess) == 3600)
+    #expect(model.moleExecutable == fixture.executable)
+
+    try fixture.writeExecutable(exitCode: 1, delay: true)
+    let rescan = Task { await model.scan() }
+    while model.scanState != .scanning && ContinuousClock.now < deadline { await Task.yield() }
+    #expect(model.nextScan == nil)
+    await model.scan()
+    #expect(model.scanState == .scanning)
+    await rescan.value
+    #expect(model.scanState == .failed(.failed))
+    #expect(model.reclaimableBytes == 2_400_000_000)
+    #expect(model.lastScan == lastSuccess)
+    #expect(try #require(model.nextScan) > firstSchedule)
+}
+
+@Test @MainActor func unsupportedMoleHasNoResultAndCanBeRechecked() async throws {
+    let fixture = try MoleFixture()
+    defer { fixture.remove() }
+    try fixture.writeExecutable(version: "9.0.0")
+    let model = DashboardModel(moleScanner: MoleScanner(executable: fixture.executable, preview: fixture.preview))
+    defer { model.stop() }
+    await model.scan()
+    #expect(model.scanState == .failed(.incompatible))
+    #expect(model.reclaimableBytes == nil)
+    #expect(model.lastScan == nil)
+    try fixture.writeExecutable()
+    await model.scan()
+    #expect(model.scanState == .ready)
+    #expect(model.reclaimableBytes == 2_400_000_000)
+}
+
 @Test func previewFreshnessSurvivesCachedURLMetadata() async throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

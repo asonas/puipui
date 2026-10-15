@@ -4,8 +4,14 @@ import GhosttyTerminal
 import QuartzCore
 
 final class MenuPanel: NSPanel {
+    var dismissOverlay: () -> Bool = { false }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, event.keyCode == 53, dismissOverlay() { return }
+        super.sendEvent(event)
+    }
 }
 
 @MainActor
@@ -80,6 +86,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         status.button?.target = self
         status.button?.action = #selector(toggle)
         panel.delegate = self
+        panel.dismissOverlay = { [weak self] in
+            guard let self, dashboardModel.showsScanDetails else { return false }
+            dashboardModel.showsScanDetails = false
+            return true
+        }
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
@@ -107,22 +118,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         NotificationCenter.default.addObserver(self, selector: #selector(screenChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        if CommandLine.arguments.contains("--check-clean-input") {
-            showAnchored()
-            prepareCleanup()
-            Task {
-                try? await Task.sleep(for: .seconds(3))
-                guard let terminal = sideTerminal, let window = terminalPanel else { exit(1) }
-                renderWindow(to: "build/cleanup-input.png", window: window)
-                let waiting = terminal.pty.exitCode == nil && terminal.receivedText.contains("mo clean")
-                closeTerminal()
-                try? await Task.sleep(for: .seconds(3))
-                let reaped = terminal.pty.exitCode != nil
-                print("cleanupInputVisible=\(waiting) reaped=\(reaped); no Enter sent")
-                exit(waiting && reaped ? 0 : 1)
-            }
-            return
-        }
         if CommandLine.arguments.contains("--check-metrics") {
             checkMetrics()
             return
@@ -155,6 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NSApp.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
         } else if panel.isVisible {
+            dashboardModel.showsScanDetails = false
             panel.orderOut(nil)
         } else {
             showAnchored()
@@ -162,6 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func showAnchored() {
+        dashboardModel.showsScanDetails = false
         guard let button = status.button, let window = button.window else { return }
         let rect = window.convertToScreen(button.convert(button.bounds, to: nil))
         let screen = window.screen ?? NSScreen.main
@@ -229,6 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return false
     }
     func windowDidResignKey(_ notification: Notification) {
+        dashboardModel.showsScanDetails = false
         if !detached && !dragging && !terminalExpanded && terminalPanel?.isVisible != true {
             panel.orderOut(nil)
             terminalPanel?.orderOut(nil)
@@ -244,8 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func resizeDashboard() {
         dashboard.rootView = Dashboard(model: dashboardModel, detached: detached,
-                                      openTerminal: { [weak self] in self?.toggleTerminal() },
-                                      prepareCleanup: { [weak self] in self?.prepareCleanup() })
+                                      openTerminal: { [weak self] in self?.toggleTerminal() })
         let size = dashboard.fittingSize
         panel.setContentSize(size)
         dashboard.frame = NSRect(origin: .zero, size: size)
@@ -254,20 +251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.contentView?.layoutSubtreeIfNeeded()
     }
 
-    private func prepareCleanup() {
-        guard sideTerminal == nil else {
-            showTerminal()
-            let alert = NSAlert()
-            alert.messageText = "Terminal is already open"
-            alert.informativeText = "Close the current terminal with CLOSE, then click CLEAN to prepare a new command."
-            alert.addButton(withTitle: "OK")
-            if let terminalPanel { alert.beginSheetModal(for: terminalPanel) }
-            return
-        }
-        toggleTerminal(initialInput: "mo clean")
-    }
-
-    private func toggleTerminal(initialInput: String? = nil) {
+    private func toggleTerminal() {
         guard !closingTerminal else { return }
         if let terminalPanel {
             if terminalPanel.isVisible && terminalExpanded { hideTerminal() }
@@ -300,8 +284,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.addChildWindow(window, ordered: .above)
         showTerminal(fresh: true)
         terminal.pty.start()
-        // Queue typeahead without a line terminator; only the user can submit it.
-        if let initialInput { terminal.pty.send(Data(initialInput.utf8)) }
     }
 
     private func showTerminal(fresh: Bool = false) {
@@ -380,6 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        dashboardModel.stop()
         guard sideTerminal != nil else { return .terminateNow }
         if sideTerminal?.pty.exitCode != nil { closeTerminal(); return .terminateNow }
         terminating = true
@@ -430,6 +413,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let anchoredSize = panel.contentView!.bounds.size
         let anchored = panel.isVisible && anchoredSize.width == 320 && anchoredSize.height < 490
         renderWindow(to: "build/window-anchored.png")
+        dashboardModel.showsScanDetails = true
+        try? await Task.sleep(for: .milliseconds(100))
+        panel.contentView?.layoutSubtreeIfNeeded()
+        let unchangedWithDetails = panel.contentView?.bounds.size == anchoredSize
+        renderWindow(to: "build/scan-details.png")
+        let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                      windowNumber: panel.windowNumber, context: nil, characters: "\u{1b}",
+                                      charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!
+        panel.sendEvent(escape)
+        try? await Task.sleep(for: .milliseconds(100))
+        let detailsDismissed = !dashboardModel.showsScanDetails
+        print("detailsPreserveSize=\(unchangedWithDetails) escapeDismissesDetails=\(detailsDismissed)")
         // Leave room above the release point so screen-edge clamping does not change the origin.
         panel.setFrameOrigin(NSPoint(x: panel.frame.minX, y: panel.frame.minY - 60))
         let down = NSEvent.mouseEvent(with: .leftMouseDown, location: topPoint, modifierFlags: [], timestamp: 0,
@@ -456,7 +451,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         print("anchoredSize=\(anchoredSize) detached adds 32pt")
         print("anchored=\(anchored) detached=\(released) closed=\(closed) reopened=\(reopened)")
         print("unchangedWhileDragging=\(unchangedWhileDragging)")
-        exit(anchored && gripAtTop && unchangedWhileDragging && released && closed && reopened ? 0 : 1)
+        exit(anchored && gripAtTop && unchangedWhileDragging && released && closed && reopened
+             && unchangedWithDetails && detailsDismissed ? 0 : 1)
     }
 
     private func renderWindow(to path: String, window: NSWindow? = nil) {
@@ -476,7 +472,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             _ = await sampler.sample()
             try? await Task.sleep(for: .seconds(1))
             let sample = await sampler.sample()
-            let cpuValid = sample.cpu.map { (0...1).contains($0) } ?? false
+            let cpuValid = sample.cpu.map { (0...1).contains($0.total) && (0...1).contains($0.user) && (0...1).contains($0.system) } ?? false
             let memoryValid = sample.memory.map { (0...1).contains($0) } ?? false
             let networkValid = sample.interface != nil
                 && sample.receivedBytesPerSecond != nil && sample.sentBytesPerSecond != nil

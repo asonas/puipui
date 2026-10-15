@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-enum ScanFailure: Error, Sendable {
+enum ScanFailure: Error, Sendable, Equatable {
     case unavailable
     case incompatible
     case failed
@@ -15,20 +15,32 @@ enum ScanFailure: Error, Sendable {
         case .invalidResult: "INVALID"
         }
     }
+
+    var explanation: String {
+        switch self {
+        case .unavailable: "Mole was not found in your login shell’s PATH. Install Mole, then choose Scan to check again."
+        case .incompatible: "This version of Puipui supports Mole 1.53.x. Choose Scan after installing a compatible version."
+        case .failed: "The scan did not finish successfully. Choose Scan to try again."
+        case .invalidResult: "Mole did not produce a fresh, readable cleanup preview. Choose Scan to try again."
+        }
+    }
 }
 
 actor MoleScanner {
-    private let executable = URL(fileURLWithPath: "/opt/homebrew/bin/mo").resolvingSymlinksInPath()
+    private(set) var executable: URL?
+    private let suppliedExecutable: URL?
     private let preview: URL
 
-    init(preview: URL = FileManager.default.homeDirectoryForCurrentUser
+    init(executable: URL? = nil, preview: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/mole/clean-list.txt")) {
+        suppliedExecutable = executable
         self.preview = preview
     }
 
     func scan() -> Result<UInt64, ScanFailure> {
-        guard FileManager.default.isExecutableFile(atPath: executable.path) else { return .failure(.unavailable) }
-        guard compatibleVersion() else { return .failure(.incompatible) }
+        executable = suppliedExecutable ?? resolveExecutable()
+        guard let executable, FileManager.default.isExecutableFile(atPath: executable.path) else { return .failure(.unavailable) }
+        guard compatibleVersion(executable) else { return .failure(.incompatible) }
         let previousDate = modificationDate(preview)
         let process = Process()
         process.executableURL = executable
@@ -45,14 +57,47 @@ actor MoleScanner {
     }
 
     func isCompatible() -> Bool {
-        FileManager.default.isExecutableFile(atPath: executable.path) && compatibleVersion()
+        executable = suppliedExecutable ?? resolveExecutable()
+        guard let executable else { return false }
+        return FileManager.default.isExecutableFile(atPath: executable.path) && compatibleVersion(executable)
     }
 
     func hasParsablePreview() -> Bool {
         parsePreview() != nil
     }
 
-    private func compatibleVersion() -> Bool {
+    private func resolveExecutable() -> URL? {
+        guard let account = getpwuid(getuid()), let shell = account.pointee.pw_shell else { return nil }
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: String(cString: shell))
+        process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+        process.arguments = ["-l", "-c", "printf '\\0%s\\0' \"$PATH\""]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let path = String(data: data, encoding: .utf8)?.split(separator: "\0", omittingEmptySubsequences: false).dropLast().last else { return nil }
+        return Self.findExecutable(in: String(path))
+    }
+
+    static func findExecutable(in searchPath: String) -> URL? {
+        for directory in searchPath.split(separator: ":", omittingEmptySubsequences: false) {
+            let base = directory.isEmpty ? FileManager.default.homeDirectoryForCurrentUser
+                : URL(fileURLWithPath: String(directory), relativeTo: FileManager.default.homeDirectoryForCurrentUser)
+            let candidate = base.appendingPathComponent("mo").standardizedFileURL
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+               !isDirectory.boolValue, FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate.resolvingSymlinksInPath()
+            }
+        }
+        return nil
+    }
+
+    private func compatibleVersion(_ executable: URL) -> Bool {
         let process = Process()
         let output = Pipe()
         process.executableURL = executable
@@ -60,9 +105,9 @@ actor MoleScanner {
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return false }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return false }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
         let text = String(decoding: data, as: UTF8.self)
         return text.range(of: #"Mole version 1\.53\.[0-9]+"#, options: .regularExpression) != nil
     }

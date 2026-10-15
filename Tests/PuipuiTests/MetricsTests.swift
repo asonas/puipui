@@ -1,6 +1,15 @@
 import Foundation
 import Testing
+import SwiftUI
 @testable import Puipui
+
+@Test @MainActor func memoryChartChangesColorAtSixtyPercent() {
+    let green = Color(red: 0.290, green: 0.650, blue: 0.322)
+    #expect(MetricChart.memoryColor(for: 0.53) == green)
+    #expect(MetricChart.memoryColor(for: 0.5999) == green)
+    #expect(MetricChart.memoryColor(for: 0.60) == DashboardColors.memory)
+    #expect(MetricChart.memoryColor(for: 1) == DashboardColors.memory)
+}
 
 @Test func cpuBreakdownUsesIntervalAndIncludesNiceInUser() throws {
     let previous = CPUTicks(user: 100, system: 50, idle: 500, nice: 10)

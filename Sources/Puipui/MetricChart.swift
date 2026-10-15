@@ -6,6 +6,10 @@ struct MetricChart: View {
     let samples: [SystemSample]
     let now: Date
 
+    static func memoryColor(for usage: Double) -> Color {
+        usage < 0.6 ? Color(red: 0.290, green: 0.650, blue: 0.322) : DashboardColors.memory
+    }
+
     private var maximum: Double {
         guard kind == .network else { return 1 }
         let peak = max(samples.flatMap { [$0.receivedBytesPerSecond, $0.sentBytesPerSecond].compactMap { $0 } }.max() ?? 0, 1_000)
@@ -36,7 +40,9 @@ struct MetricChart: View {
                         drawBand(context, size: size, color: DashboardColors.send, lower: { $0.cpu?.user }, upper: { $0.cpu?.total })
                         drawBand(context, size: size, color: DashboardColors.receive, lower: { $0.cpu.map { _ in 0 } }, upper: { $0.cpu?.user })
                     case .memory:
-                        drawBand(context, size: size, color: DashboardColors.memory, lower: { $0.memory.map { _ in 0 } }, upper: { $0.memory })
+                        drawBand(context, size: size, color: DashboardColors.memory,
+                                 sampleColor: { $0.memory.map(Self.memoryColor) },
+                                 lower: { $0.memory.map { _ in 0 } }, upper: { $0.memory })
                     case .network:
                         drawBand(context, size: size, color: DashboardColors.receive,
                                  lower: { $0.receivedBytesPerSecond.map { _ in 0 } }, upper: { $0.receivedBytesPerSecond })
@@ -79,6 +85,7 @@ struct MetricChart: View {
     }
 
     private func drawBand(_ context: GraphicsContext, size: CGSize, color: Color, belowZero: Bool = false,
+                          sampleColor: ((SystemSample) -> Color?)? = nil,
                           lower: (SystemSample) -> Double?, upper: (SystemSample) -> Double?) {
         let baseline = kind == .network ? size.height / 2 : size.height - 0.5
         let height = kind == .network ? size.height / 2 - 0.5 : size.height - 1
@@ -86,15 +93,16 @@ struct MetricChart: View {
         var top: [CGPoint] = []
         var bottom: [CGPoint] = []
         var previousDate: Date?
+        var bandColor = color
         func flush() {
             guard top.count > 1 else { top.removeAll(); bottom.removeAll(); return }
             var area = Path()
             area.addLines(top + bottom.reversed())
             area.closeSubpath()
-            context.fill(area, with: .color(color.opacity(0.75)))
+            context.fill(area, with: .color(bandColor.opacity(0.75)))
             var trace = Path()
             trace.addLines(top)
-            context.stroke(trace, with: .color(color), lineWidth: 1)
+            context.stroke(trace, with: .color(bandColor), lineWidth: 1)
             top.removeAll()
             bottom.removeAll()
         }
@@ -102,6 +110,17 @@ struct MetricChart: View {
             if let previousDate, sample.timestamp.timeIntervalSince(previousDate) > 3 { flush() }
             previousDate = sample.timestamp
             guard let low = lower(sample), let high = upper(sample) else { flush(); continue }
+            let nextColor = sampleColor?(sample) ?? color
+            if nextColor != bandColor {
+                let lastTop = top.last
+                let lastBottom = bottom.last
+                flush()
+                if let lastTop, let lastBottom {
+                    top.append(lastTop)
+                    bottom.append(lastBottom)
+                }
+                bandColor = nextColor
+            }
             let x = size.width * min(max(1 + sample.timestamp.timeIntervalSince(now) / 300, 0), 1)
             top.append(CGPoint(x: x, y: baseline + direction * height * min(max(high / maximum, 0), 1)))
             bottom.append(CGPoint(x: x, y: baseline + direction * height * min(max(low / maximum, 0), 1)))

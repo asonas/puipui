@@ -92,9 +92,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        status.button?.title = "PUI"
-        status.button?.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
-        status.button?.toolTip = "Puipui"
+        if let url = Bundle.module.url(forResource: "app-mark", withExtension: "pdf"),
+           let image = NSImage(contentsOf: url) {
+            image.size = NSSize(width: 18, height: 18)
+            image.isTemplate = true
+            status.button?.image = image
+        } else {
+            status.button?.title = "puipui"
+        }
+        status.button?.toolTip = "puipui"
         status.button?.target = self
         status.button?.action = #selector(toggle)
         panel.delegate = self
@@ -191,7 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         detached = true
         grip.detached = true
         panel.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
-        panel.title = "Puipui"
+        panel.title = "puipui"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.titlebarSeparatorStyle = .none

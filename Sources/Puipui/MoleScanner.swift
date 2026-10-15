@@ -19,7 +19,7 @@ enum ScanFailure: Error, Sendable, Equatable {
     var explanation: String {
         switch self {
         case .unavailable: "Mole was not found in your login shell’s PATH. Install Mole, then choose Scan to check again."
-        case .incompatible: "This version of Puipui supports Mole 1.53.x and 1.59.x. Choose Scan after installing a compatible version."
+        case .incompatible: "This version of puipui supports Mole 1.53.x and 1.59.x. Choose Scan after installing a compatible version."
         case .failed: "The scan did not finish successfully. Choose Scan to try again."
         case .invalidResult: "Mole did not produce a fresh, readable cleanup preview. Choose Scan to try again."
         }

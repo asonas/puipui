@@ -238,7 +238,7 @@ private struct OverflowMenu: NSViewRepresentable {
             scan.isEnabled = model.scanState != .scanning
             menu.addItem(scan)
             menu.addItem(.separator())
-            let quit = NSMenuItem(title: "Quit Puipui", action: #selector(quit), keyEquivalent: "q")
+            let quit = NSMenuItem(title: "Quit puipui", action: #selector(quit), keyEquivalent: "q")
             quit.target = self
             menu.addItem(quit)
             menu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: sender)

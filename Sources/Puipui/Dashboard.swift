@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Sparkle
 
 enum DashboardColors {
     static let paper = Color(red: 0.961, green: 0.957, blue: 0.937)
@@ -18,6 +19,7 @@ struct Dashboard: View {
     @ObservedObject var model: DashboardModel
     var detached = false
     var openTerminal: () -> Void = {}
+    var updaterController: SPUStandardUpdaterController? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -78,7 +80,7 @@ struct Dashboard: View {
                     .buttonStyle(DashboardButtonStyle())
                     .help("Open the embedded terminal")
                     Spacer()
-                    OverflowMenu(model: model).frame(width: 36, height: 36)
+                    OverflowMenu(model: model, updaterController: updaterController).frame(width: 36, height: 36)
                         .background(DashboardColors.button, in: RoundedRectangle(cornerRadius: 6))
                 }
                 .font(.system(size: 13, weight: .medium))
@@ -209,8 +211,9 @@ enum LucideIcon: String, View {
 
 private struct OverflowMenu: NSViewRepresentable {
     @ObservedObject var model: DashboardModel
+    var updaterController: SPUStandardUpdaterController?
 
-    func makeCoordinator() -> Coordinator { Coordinator(model: model) }
+    func makeCoordinator() -> Coordinator { Coordinator(model: model, updaterController: updaterController) }
 
     func makeNSView(context: Context) -> NSButton {
         let button = NSButton(title: "", target: context.coordinator, action: #selector(Coordinator.open(_:)))
@@ -223,11 +226,18 @@ private struct OverflowMenu: NSViewRepresentable {
         return button
     }
 
-    func updateNSView(_ button: NSButton, context: Context) { context.coordinator.model = model }
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.model = model
+        context.coordinator.updaterController = updaterController
+    }
 
     @MainActor final class Coordinator: NSObject {
         var model: DashboardModel
-        init(model: DashboardModel) { self.model = model }
+        var updaterController: SPUStandardUpdaterController?
+        init(model: DashboardModel, updaterController: SPUStandardUpdaterController?) {
+            self.model = model
+            self.updaterController = updaterController
+        }
 
         @objc func open(_ sender: NSButton) {
             let menu = NSMenu()
@@ -238,6 +248,14 @@ private struct OverflowMenu: NSViewRepresentable {
             scan.isEnabled = model.scanState != .scanning
             menu.addItem(scan)
             menu.addItem(.separator())
+            if let updaterController {
+                let update = NSMenuItem(title: "Check for Updates…",
+                                        action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)), keyEquivalent: "")
+                update.target = updaterController
+                update.isEnabled = updaterController.updater.canCheckForUpdates
+                menu.addItem(update)
+                menu.addItem(.separator())
+            }
             let quit = NSMenuItem(title: "Quit puipui", action: #selector(quit), keyEquivalent: "q")
             quit.target = self
             menu.addItem(quit)

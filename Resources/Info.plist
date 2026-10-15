@@ -12,4 +12,6 @@
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
+<key>SUFeedURL</key><string>https://github.com/asonas/puipui/releases/latest/download/appcast.xml</string>
+<key>SUPublicEDKey</key><string>F2nzhGLatAJTwZbDaK6qHz804bQ1FLKlUSf5KGsqP+c=</string>
 </dict></plist>

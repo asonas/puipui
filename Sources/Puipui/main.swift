@@ -3,6 +3,7 @@ import SwiftUI
 import GhosttyTerminal
 import QuartzCore
 import ServiceManagement
+import Sparkle
 
 final class MenuPanel: NSPanel {
     var dismissOverlay: () -> Bool = { false }
@@ -67,6 +68,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                   styleMask: [.borderless], backing: .buffered, defer: false)
     private let grip = GripView()
     private let dashboardModel = DashboardModel()
+    private let updaterController = SPUStandardUpdaterController(startingUpdater: false,
+                                                               updaterDelegate: nil, userDriverDelegate: nil)
     private var dashboard: NSHostingView<Dashboard>!
     private var detached = false
     private var outsideMonitor: Any?
@@ -152,6 +155,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
             return
+        }
+        if !CommandLine.arguments.contains(where: { $0.hasPrefix("--check-") }) {
+            updaterController.startUpdater()
         }
         dashboardModel.start()
         if CommandLine.arguments.contains("--check-terminal") { checkTerminal() }
@@ -260,7 +266,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func resizeDashboard() {
         dashboard.rootView = Dashboard(model: dashboardModel, detached: detached,
-                                      openTerminal: { [weak self] in self?.toggleTerminal() })
+                                      openTerminal: { [weak self] in self?.toggleTerminal() },
+                                      updaterController: updaterController)
         let size = dashboard.fittingSize
         panel.setContentSize(size)
         dashboard.frame = NSRect(origin: .zero, size: size)

@@ -1,62 +1,76 @@
+<img src="docs/images/app-icon.png" alt="puipui's resting guinea pig icon" width="96" height="96">
+
 # puipui
 
-macOSメニューバーアプリです。CPUのUser・System別使用率、メモリ使用率と圧力、主要ネットワークインターフェースの受信・送信速度を1秒ごとに取得し、直近5分をグラフ表示します。ディスク空き容量は60秒ごとに更新します。起動時にMole 1.53系・1.59系のdry-runを実行し、その後は直近のスキャン完了から60分後に再実行します。左側にGhosttyの埋め込み端末を開けます。未取得値は `—`、グラフの未取得区間は空白で表示します。
+A native macOS menu bar app for checking system activity and opening a terminal without leaving the dashboard.
 
-## ビルドと起動
+puipui combines five minutes of CPU, memory, and network history with free disk space and a cleanup estimate from [Mole](https://github.com/tw93/Mole). An embedded [Ghostty](https://github.com/Lakr233/libghostty-spm) terminal provides a place to run `mo` or other shell commands.
 
-Swift 6対応のXcodeを選択した環境で実行します。
+<p>
+  <img src="docs/images/dashboard.jpg" alt="puipui dashboard with CPU, memory, network, and disk metrics" width="202">
+  <img src="docs/images/terminal.jpg" alt="puipui with its embedded terminal drawer open beside the dashboard" width="560">
+</p>
+
+## What it does
+
+- Samples CPU, memory, and the primary network interface every second, with a five-minute history. CPU separates User and System; network traffic separates receive and send.
+- Refreshes free disk space about once a minute. Runs `mo clean --dry-run` at launch, then schedules the next scan one hour after each scan completes.
+- Opens an interactive login shell in a terminal drawer. Hiding the drawer preserves the session; closing it ends the shell.
+- Detaches into a window when dragged by its top handle. The app stays out of the Dock.
+
+The background scan estimates reclaimable space; it does not delete cleanup candidates. Mole does write its preview file and operation logs. Cleanup commands are entered and run manually in the terminal.
+
+## Install
+
+Download the Apple Silicon DMG from [GitHub Releases](https://github.com/asonas/puipui/releases), open it, and drag **puipui** to **Applications**. Quit any running copy before replacing it, then launch `/Applications/puipui.app`. Release builds are Developer ID signed and notarized by Apple.
+
+Install [Mole](https://github.com/tw93/Mole) separately to enable cleanup estimates. System metrics and the terminal work without it.
+
+## Build from source
+
+The package targets macOS 13 or later and requires an Xcode toolchain with Swift 6. The current build has been verified on Apple Silicon with Swift 6.4.
+
+The build script defaults to the maintainer's Apple Development identity. On another machine, set `CODE_SIGN_IDENTITY` to a certificate in your keychain. Signing failures stop the build. Local development builds are not notarized; [release builds](docs/releases.md) use Developer ID signing and Apple notarization.
 
 ```sh
+git clone https://github.com/asonas/puipui.git
+cd puipui
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 sh scripts/build-app.sh
 open build/puipui.app
 ```
 
-Finderから `build/puipui.app` を開くこともできます。チーム `QYP65434UW` のApple Development証明書で署名します。証明書と秘密鍵がキーチェーンに必要です。配布用の公証はしていません。
+## Using puipui
 
-ログイン時に起動する場合は、アプリを固定した配置先に置いてから、そのアプリ自身で登録します。開発用worktreeのアプリは登録しないでください。
+Click the guinea pig in the menu bar to open the dashboard. Drag the handle at the top to detach it; after closing the detached window, click the menu bar icon to reopen the panel.
 
-```sh
-ditto build/puipui.app /Applications/puipui.app
-/Applications/puipui.app/Contents/MacOS/puipui --register-login-item
-```
+| Control | Behavior |
+| --- | --- |
+| **Terminal** | Opens or hides the terminal drawer. The shell starts in the home directory and loads the account's interactive login configuration. |
+| **CLOSE** in the drawer | Ends the terminal session. Quitting the app also terminates and reaps its shell. |
+| **… → Scan** | Runs another dry-run and resets the next scan time. Disabled while a scan is running. |
+| **… → Check for Updates…** | Checks the GitHub Releases feed using Sparkle and offers available updates. Automatic checks use Sparkle's consent prompt. |
+| **Information icon** | Shows the last successful scan, next scan, Mole executable path, and any failure. Click outside or press Esc to dismiss. |
+| **… → Quit puipui** | Exits the app. |
 
-登録にはmacOSのServiceManagement APIを使い、`loginItemEnabled=true` で有効化を確認します。解除はシステム設定の「ログイン項目と機能拡張」で行えます。
+Missing readings appear as `—`, and missing history stays blank. A failed scan preserves the last successful estimate and timestamp, marked **Update failed**. Scan results are held in memory until the app quits. After running a cleanup command, choose **Scan** to refresh the estimate; puipui does not monitor terminal commands for completion.
 
-フォルダアクセス許可を更新後も引き継ぐため、同じBundle IDと開発用署名を継続して使います。証明書が見つからない場合はビルドを失敗させ、アドホック署名には切り替えません。従来のアドホック署名から移行した直後は、アクセス許可を再度求められることがあります。
+## Development and design
 
-## 操作
+See [Development](docs/development.md) for the source layout, metric semantics, and verification commands.
+See [Releases](docs/releases.md) for signed DMG packaging and Sparkle publishing.
 
-- メニューバーのモルモットアイコンをクリックすると、直下にパネルを表示します。Dockには表示しません。
-- 上端にカーソルを置くとハンドルが現れます。下へドラッグし、マウスを離すと上にウィンドウボタン領域が伸びます。「視差効果を減らす」が有効な場合はアニメーションしません。
-- ウィンドウボタン用の32ptは独立時だけ追加します。通常表示では内容に合わせた高さになります。
-- 独立ウィンドウを閉じた後、モルモットアイコンをクリックするとパネルとして再表示します。
-- 三点メニューの `Scan` で `mo clean --dry-run` を開始します。クリーンアップ対象は削除しませんが、Moleの候補一覧と操作ログは更新します。スキャン中は再操作できません。手動スキャンも次回予定の起算点を更新します。
-- 整理可能容量には前回成功時刻を表示します。更新に失敗したときも前回の成功値と時刻を残し、`Update failed` を併記します。結果はアプリ終了まで保持します。
-- 情報アイコンを押すと、最終成功・次回予定・Moleの状態・検出したパスを表示します。矢印のないポップオーバーで、外側クリックかEscで閉じます。Moleが使えない理由もここで確認できます。
-- Moleの実行ファイルはログインシェルのPATHから検出します。シェル関数やエイリアスは対象外です。Moleの自動インストール・更新は行いません。環境を直した後は `Scan` で再確認できます。
-- 三点メニューの `Quit puipui` で終了します。
-- `Terminal` で左側にGhosttyターミナルを開きます。同じボタンで隠してもセッションは残り、`CLOSE` でシェルを終了します。アプリ終了時もシェルを終了・回収します。
-- ターミナルはホームディレクトリで、macOSアカウントに設定されたログインシェルを `-l -i` 付きで起動します。zshなら `.zprofile`・`.zshrc` など通常の設定を読み込みます。整理コマンドは自分で入力します。コマンドの終了は監視していません。空き容量は60秒ごとに更新され、整理可能容量の再集計には `Scan` を使います。
-- ターミナルは本体の左端から0.28秒で引き出され、0.20秒で収納されます。文字サイズは変えず、表示領域だけを広げます。「視差効果を減らす」設定では0.10秒のフェードだけになります。
+The app icon is an original resting guinea pig: **C / resting loaf** in the [Figma design](https://www.figma.com/design/spwA1eEgycGIK1TtjHZ45R/puipui?node-id=27-134). The app name is always written **puipui**. The symbol follows Lucide's 24px canvas and 2px rounded-stroke vocabulary; the rounded app background is a separate layer.
 
-CPU・Memoryのグラフは0〜100%の固定軸です。CPUはUser（niceを含む）とSystemを積み上げて表示します。Memoryの面グラフは使用率、PressureはOSのメモリ圧力通知です。Networkは受信を上、送信を下に描き、両方向に共通の上限を表示中の最大値に合わせて調整します。上下限と中央の補助線、5分前と現在の時間表示を付けています。
+- [App icon SVG](Resources/AppIcon.svg) and [macOS ICNS](Resources/AppIcon.icns)
+- [Monochrome symbol](Resources/AppIconConcepts/guinea-pig-c.svg), also used as a template image in the menu bar
+- [Icon studies](Resources/AppIconConcepts/README.md) and [design decisions](docs/design-refinement.md) (Japanese)
 
-## 検証
+The interface uses [Lucide icons](https://lucide.dev), with their [license included](Sources/Puipui/Resources/Icons/LICENSE). The original guinea pig symbol is separate from the Lucide icon set.
 
-```sh
-build/puipui.app/Contents/MacOS/puipui --check-window
-build/puipui.app/Contents/MacOS/puipui --check-metrics
-build/puipui.app/Contents/MacOS/puipui --check-storage
-build/puipui.app/Contents/MacOS/puipui --check-terminal
-build/puipui.app/Contents/MacOS/puipui --check-window --animate-window
-```
+## License
 
-ウィンドウ操作、CPU・メモリ・主要ネットワークインターフェース、ディスク容量・Mole互換性・プレビュー形式を検証します。
+Licensed under the [MIT License](LICENSE). Copyright (c) 2026 Yuya Fujiwara.
 
-回帰テストはXcodeのSwift Testingで実行します。
-
-```sh
-env DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
-```
-
-`--check-scan` は実際のdry-runを1回実行し、新しい結果の検証と集計まで確認します。Moleの候補一覧と操作ログを更新するため、通常の読み取り検査とは別に実行します。
+Third-party components retain their own licenses. Their [notices](Resources/ThirdPartyNotices.txt) are included in the app bundle alongside puipui's license.
+Releases also include [corresponding source and rebuilding instructions](docs/third-party-sources.md).

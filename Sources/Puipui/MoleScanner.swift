@@ -19,7 +19,7 @@ enum ScanFailure: Error, Sendable, Equatable {
     var explanation: String {
         switch self {
         case .unavailable: "Mole was not found in your login shell’s PATH. Install Mole, then choose Scan to check again."
-        case .incompatible: "This version of Puipui supports Mole 1.53.x. Choose Scan after installing a compatible version."
+        case .incompatible: "This version of Puipui supports Mole 1.53.x and 1.59.x. Choose Scan after installing a compatible version."
         case .failed: "The scan did not finish successfully. Choose Scan to try again."
         case .invalidResult: "Mole did not produce a fresh, readable cleanup preview. Choose Scan to try again."
         }
@@ -45,6 +45,7 @@ actor MoleScanner {
         let process = Process()
         process.executableURL = executable
         process.arguments = ["clean", "--dry-run"]
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return .failure(.failed) }
@@ -109,7 +110,7 @@ actor MoleScanner {
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return false }
         let text = String(decoding: data, as: UTF8.self)
-        return text.range(of: #"Mole version 1\.53\.[0-9]+"#, options: .regularExpression) != nil
+        return text.range(of: #"(?m)^Mole version 1\.(?:53|59)\.[0-9]+(?:\r?$|[ \t])"#, options: .regularExpression) != nil
     }
 
     func validPreview(previousDate: Date?) -> Bool {
@@ -139,10 +140,13 @@ actor MoleScanner {
         var total = 0.0
         var recognized = false
         let expression = try? NSRegularExpression(pattern: #"  # ([0-9]+(?:\.[0-9]+)?)(B|KB|MB|GB|TB)(?:, [0-9]+ items)?$"#)
+        let coveredExpression = try? NSRegularExpression(pattern: #"  # (?:[0-9]+(?:\.[0-9]+)?(?:B|KB|MB|GB|TB)|size unknown)(?:, [0-9]+ items)?, counted under /.+$"#)
         for line in text.split(separator: "\n") where !line.hasPrefix("#") {
             if line.hasPrefix("=== ") && line.hasSuffix(" ===") { continue }
             let string = String(line)
             let range = NSRange(string.startIndex..., in: string)
+            // Mole 1.59 lists nested candidates whose bytes are already in their parent row.
+            if coveredExpression?.firstMatch(in: string, range: range) != nil { continue }
             guard let match = expression?.firstMatch(in: string, range: range),
                   let valueRange = Range(match.range(at: 1), in: string),
                   let unitRange = Range(match.range(at: 2), in: string),

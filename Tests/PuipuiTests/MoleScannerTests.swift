@@ -46,6 +46,41 @@ private struct MoleFixture {
     #expect(MoleScanner.findExecutable(in: "\(first.folder.path):\(second.folder.path)") == second.executable)
 }
 
+@Test(arguments: ["1.53.2", "1.59.0", "1.59.1"])
+func supportedMoleVersionsCanScan(version: String) async throws {
+    let fixture = try MoleFixture()
+    defer { fixture.remove() }
+    try fixture.writeExecutable(version: version)
+    let scanner = MoleScanner(executable: fixture.executable, preview: fixture.preview)
+    #expect(await scanner.scan() == .success(2_400_000_000))
+}
+
+@Test(arguments: ["1.52.0", "1.60.0", "2.0.0", "1.59.1-beta", "1.59.1-windows"])
+func unsupportedMoleDoesNotRunCleanup(version: String) async throws {
+    let fixture = try MoleFixture()
+    defer { fixture.remove() }
+    try fixture.writeExecutable(version: version)
+    let scanner = MoleScanner(executable: fixture.executable, preview: fixture.preview)
+    #expect(await scanner.scan() == .failure(.incompatible))
+    #expect(!FileManager.default.fileExists(atPath: fixture.preview.path))
+}
+
+@Test func nestedMole159CandidatesAreNotCountedTwice() async throws {
+    let fixture = try MoleFixture()
+    defer { fixture.remove() }
+    let contents = """
+    # Mole Cleanup Preview - 2026-10-15 22:40:00
+    === User essentials ===
+    /tmp/cache  # 1.02GB, 2 items
+    /tmp/cache/child  # 25.7MB, counted under /tmp/cache
+    /tmp/cache/unknown  # size unknown, 2 items, counted under /tmp/cache
+    /tmp/other  # 4KB
+    """
+    try Data(contents.utf8).write(to: fixture.preview)
+    let scanner = MoleScanner(preview: fixture.preview)
+    #expect(await scanner.parsePreview() == 1_020_004_000)
+}
+
 @Test @MainActor func startupScansImmediatelyAndRescanningRetainsLastSuccessOnFailure() async throws {
     let fixture = try MoleFixture()
     defer { fixture.remove() }
